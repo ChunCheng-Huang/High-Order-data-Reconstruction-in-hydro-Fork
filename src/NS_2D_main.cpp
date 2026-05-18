@@ -29,9 +29,12 @@ using namespace std;
 /////////////////////////////////////////////////////////////////////////////
 // Change here to setting in another txt file ???
 
-int     Nx = 256 , Ny = 256 , xmax = 10 , ymax = 10;
-double  dx = 2*float(xmax)/Nx , dy = 2*float(ymax)/Ny;
-string  Dir="Data" , prob = "NSE";
+const int     Nx = 256   , xmax = 10, Ny = 256   , ymax = 10;
+const double  dx = 2*float(xmax)/Nx , dy = 2*float(ymax)/Ny ;
+const string  Dir="Data" , prob = "NSE";
+
+// Physics constant
+const double cs = 1.0; //
 
 ////////////////////////////////////////////////////////////////////////////
 /////////////////////////////  Grid  ///////////////////////////////////////
@@ -47,32 +50,34 @@ void Grid_initail(vector<double>& x , vector<double>& y ){
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////  Data Struct  /////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-struct ConservationState {
-    double rho ;
-    double u, v, w ;
+struct ConsState {
+    double rho;  // Dsensity
+    double mu ;  // x momenta rho * u
+    double mv ;  // y momenta rho * v
+    double mw ;  // z momenta rho * w
 
-    ConservationState operator+(const ConservationState& other) const {
-        return {rho + other.rho,
-                u   + other.u  ,
-                v   + other.v  ,
-                w   + other.w};
+    ConsState operator+(const ConsState& other) const {
+        return {rho + other.rho ,
+                mu  + other.mu  ,
+                mv  + other.mv  ,
+                mw  + other.mw };
     };
 
-    ConservationState operator*(double scalar) const {
-        return {rho * scalar,
-                u   * scalar,
-                v   * scalar, 
-                w   * scalar};
+    ConsState operator*(double scalar) const {
+        return {rho * scalar  ,
+                mu  * scalar  ,
+                mv  * scalar  , 
+                mw  * scalar };
     }
 };
 
-using RhsOperator = function<vector<vector<ConservationState>>(const vector<vector<ConservationState>>&)>;
+using RhsOperator = function<vector<vector<ConsState>>(const vector<vector<ConsState>>&)>;
 
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////  Initial  /////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
 
-void Initial_Value( vector<vector<ConservationState>>& u0 ,vector<double>& x , vector<double>& y){
+void Initial_Value( vector<vector<ConsState>>& u0 ,vector<double>& x , vector<double>& y){
     // V1 - Testing struct
     
     #   pragma omp parallel for collapse(2)
@@ -82,9 +87,9 @@ void Initial_Value( vector<vector<ConservationState>>& u0 ,vector<double>& x , v
             // Initail condiction
             double r = (x[i]*x[i] + y[j]*y[j]);
             u0[i][j].rho = exp(-r/4.0);
-            u0[i][j].u = 1.0;
-            u0[i][j].v = 0.0;
-            u0[i][j].w = 0.0;
+            u0[i][j].mu  = -1e5*y[j]/sqrt(r)*sin(sqrt(r) * M_PI) * u0[i][j].rho;
+            u0[i][j].mv  =  1e5*x[i]/sqrt(r)*sin(sqrt(r) * M_PI) * u0[i][j].rho;
+            u0[i][j].mw  = 0.0 * u0[i][j].rho;
         }    
     }
 
@@ -92,12 +97,12 @@ void Initial_Value( vector<vector<ConservationState>>& u0 ,vector<double>& x , v
 
     ofstream outFile("../" + Dir + "/"+ prob + "_" + Fname);
     // The parameters
-    outFile << "x,y,rho,u,v,w\n";
+    outFile << "x,y,rho,mu,mv,mw\n";
 
     for (int i=0 ; i < Nx ; i++){
         for (int j=0 ; j < Ny ; j++){
-            outFile << x[i]       << " , " << y[j]       << " , " << u0[i][j].rho << " , ";
-            outFile << u0[i][j].u << " , " << u0[i][j].v << " , " << u0[i][j].w   << '\n';
+            outFile << x[i]        << " , " << y[j]        << " , " << u0[i][j].rho  << " , ";
+            outFile << u0[i][j].mu << " , " << u0[i][j].mv << " , " << u0[i][j].mw   << '\n';
         }
     }
     outFile.close();
@@ -106,26 +111,41 @@ void Initial_Value( vector<vector<ConservationState>>& u0 ,vector<double>& x , v
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////  PDE Operator  ////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-vector<vector<ConservationState>> Pure_Advection_Operator(const vector<vector<ConservationState>>& U) {
+vector<vector<ConsState>> NSE_Operator(const vector<vector<ConsState>>& U) {
 
-    vector<vector<ConservationState>> dUdt(Nx, vector<ConservationState>(Ny, {0.0, 0.0, 0.0, 0.0}));
-    
-    // Background wind
-    double constant_u = 1.0; 
-    double constant_v = 1.0; 
+    vector<vector<ConsState>> dUdt(Nx, vector<ConsState>(Ny, {0.0, 0.0, 0.0, 0.0}));
 
     #pragma omp parallel for collapse(2)
-    for (int i = 1; i < Nx; i++) {
-        for (int j = 1; j < Ny; j++) {
+    for (int i = 1; i < Nx-1 ; i++) {
+        for (int j = 1; j < Ny-1 ; j++) {
 
-            double dphi_dx = (U[i][j].rho - U[i-1][j].rho) / dx;
-            double dphi_dy = (U[i][j].rho - U[i][j-1].rho) / dy;
-
-            dUdt[i][j].rho = -(constant_u * dphi_dx + constant_v * dphi_dy);
+            double u   = U[i][j].mu/U[i][j].rho;
+            double v   = U[i][j].mv/U[i][j].rho;
+            // double P = cs * cs * U[i][j].rho;
             
-            dUdt[i][j].u = 0.0;
-            dUdt[i][j].v = 0.0;
-            dUdt[i][j].w = 0.0;
+            // Continuity Equation
+            double drho_dx = (U[i+1][j].rho - U[i-1][j].rho ) / (2.0 * dx); 
+            double drho_dy = (U[i][j+1].rho - U[i][j-1].rho ) / (2.0 * dy); 
+
+            // Momenta Equation
+            // X
+            double dmu_dx = (U[i+1][j].mu  - U[i-1][j].mu ) /  (2.0 * dx) ;
+            double dmu_dy = (U[i][j+1].mu  - U[i][j-1].mu ) /  (2.0 * dy) ;
+            double du_dx  = (U[i+1][j].mu / U[i+1][j].rho  - U[i-1][j].mu / U[i-1][j].rho) /  (2.0 * dx) ;
+            double dv_dy  = (U[i][j+1].mv / U[i][j+1].rho  - U[i][j-1].mv / U[i][j-1].rho) /  (2.0 * dy) ;
+            double dP_dx  = cs * cs * ( U[i+1][j].rho - U[i-1][j].rho) / (2.0 * dx);
+
+            // Y
+            double dmv_dx = (U[i+1][j].mv  - U[i-1][j].mv ) /  (2.0 * dx) ;
+            double dmv_dy = (U[i][j+1].mv  - U[i][j-1].mv ) / (2.0 * dy) ;
+            double dP_dy  = cs * cs * ( U[i+1][j].rho - U[i-1][j].rho) / (2.0 * dy);
+            
+            // Time differential
+            dUdt[i][j].rho  = -drho_dx-drho_dy;
+            dUdt[i][j].mu   = -( u*dmu_dx + v*dmu_dy + dP_dx + U[i][j].mu * (du_dx+dv_dy));
+            dUdt[i][j].mv   = -( u*dmv_dx + v*dmv_dy + dP_dy + U[i][j].mv * (du_dx+dv_dy));;
+            dUdt[i][j].mw   = 0.0;
+
         }
     }
     return dUdt;
@@ -134,23 +154,23 @@ vector<vector<ConservationState>> Pure_Advection_Operator(const vector<vector<Co
 /////////////////////////////////////////////////////////////////////////////
 /////////////////////////////  RK4 Solver  //////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////
-vector<vector<ConservationState>> RK4_Step(
-    const vector<vector<ConservationState>>& Un, 
+vector<vector<ConsState>> RK4_Step(
+    const vector<vector<ConsState>>& Un, 
     double dt, 
     RhsOperator calc_RHS) 
 {
     // Stage 1
-    vector<vector<ConservationState>> k1 = calc_RHS(Un);
+    vector<vector<ConsState>> k1 = calc_RHS(Un);
 
     // Stage 2
-    vector<vector<ConservationState>> U_temp(Nx, vector<ConservationState>(Ny));
+    vector<vector<ConsState>> U_temp(Nx, vector<ConsState>(Ny));
     #pragma omp parallel for collapse(2)
     for (int i = 0; i < Nx; i++) {
         for (int j = 0; j < Ny; j++) {
             U_temp[i][j] = Un[i][j] + k1[i][j] * (0.5 * dt);
         }
     }
-    vector<vector<ConservationState>> k2 = calc_RHS(U_temp);
+    vector<vector<ConsState>> k2 = calc_RHS(U_temp);
 
     // Stage 3
     #pragma omp parallel for collapse(2)
@@ -159,7 +179,7 @@ vector<vector<ConservationState>> RK4_Step(
             U_temp[i][j] = Un[i][j] + k2[i][j] * (0.5 * dt);
         }
     }
-    vector<vector<ConservationState>> k3 = calc_RHS(U_temp);
+    vector<vector<ConsState>> k3 = calc_RHS(U_temp);
 
     // Stage 4
     #pragma omp parallel for collapse(2)
@@ -168,9 +188,9 @@ vector<vector<ConservationState>> RK4_Step(
             U_temp[i][j] = Un[i][j] + k3[i][j] * dt;
         }
     }
-    vector<vector<ConservationState>> k4 = calc_RHS(U_temp);
+    vector<vector<ConsState>> k4 = calc_RHS(U_temp);
     // Final Integration
-    vector<vector<ConservationState>> Unext(Nx, vector<ConservationState>(Ny));
+    vector<vector<ConsState>> Unext(Nx, vector<ConsState>(Ny));
     #pragma omp parallel for collapse(2)
     for (int i = 0; i < Nx; i++) {
         for (int j = 0; j < Ny; j++) {
@@ -184,7 +204,7 @@ vector<vector<ConservationState>> RK4_Step(
 
 int main(){
     vector<double> x(Nx) , y(Ny);
-    vector< vector <ConservationState> > u0(Nx, vector <ConservationState> (Ny));
+    vector< vector <ConsState> > u0(Nx, vector <ConsState> (Ny));
 
     // setting grid
     Grid_initail(x,y);
@@ -195,30 +215,27 @@ int main(){
     // save data to csv or something else
     string Fname = "Final.csv";
     ofstream outFile("../" + Dir + "/"+ prob + "_" +Fname);
-    outFile << "time,x,y,rho,u,v,w\n";
+    outFile << "time,x,y,rho,mu,mv,mw\n";
 
     // RK4 or RK-high
     double dt = 0.01;
-    int total_step  = 100;
+    int total_step  = 1000;
 
     // Evolution
     cout << "Starting Time Evolution ... " << endl;
     for (int step=1 ; step <= total_step ; step++){
 
-        // Pure Advection
-        u0 = RK4_Step(u0 , dt , Pure_Advection_Operator);
-
         // NSE 
-        // u0 = RK4_Step(u0 , dt , NSE_Operator);
+        u0 = RK4_Step(u0 , dt , NSE_Operator);
 
         if (step % 20 == 0) {
             cout << "Step: " << step << " | Center density rho = " << u0[Nx/2][Ny/2].rho << endl;
 
             for (int i=0 ; i < Nx ; i++){
                 for (int j=0 ; j < Ny ; j++){
-                    outFile << step       << " , ";
-                    outFile << x[i]       << " , " << y[j]       << " , " << u0[i][j].rho << " , ";
-                    outFile << u0[i][j].u << " , " << u0[i][j].v << " , " << u0[i][j].w   << '\n';
+                    outFile << step        << " , ";
+                    outFile << x[i]        << " , " << y[j]        << " , " << u0[i][j].rho  << " , ";
+                    outFile << u0[i][j].mu << " , " << u0[i][j].mv << " , " << u0[i][j].mw   << '\n';
                 }
             }
         }

@@ -27,7 +27,7 @@ using namespace std;
 
 int     Nx = 256 , Ny = 256 , xmax = 10 , ymax = 10;
 double  dx = 2*float(xmax)/Nx , dy = 2*float(ymax)/Ny;
-string  Dir="Data" ,prob="Adv";
+string  Dir="Data" , prob="Adv";
 
 ////////////////////////////////////////////////////////////////////////////
 /////////////////////////////  Grid  ///////////////////////////////////////
