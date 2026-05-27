@@ -34,3 +34,7 @@ Q : Now I had finished the Navier-Stokes Equation. (05/20)
     What is the question we would like to disscussion?
 A : 
 ==================================================================
+Q : If the slope of rho was large then get a minus,
+    that I gave a small number but it is a gap of the neighboors. (05/27)
+A : 
+==================================================================
